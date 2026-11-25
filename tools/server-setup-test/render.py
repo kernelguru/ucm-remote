@@ -57,5 +57,6 @@ else:
 for marker in ("__CA_", "__KRL_", "__PIN_", "__API_", "__UCM_", "__PRINCIPALS_", "__UPDATER_"):
     assert marker not in cmd, marker
 pathlib.Path(out).write_text(cmd)
-pathlib.Path(out + ".remove").write_text(removal)
+remove_path = out[:-4] + "-remove.ps1" if platform == "windows" else out + ".remove"
+pathlib.Path(remove_path).write_text(removal)
 print("rendered", out, len(cmd), "bytes")

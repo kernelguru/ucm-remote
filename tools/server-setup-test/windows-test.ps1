@@ -50,7 +50,7 @@ Write-Host '=== Zweiter Lauf ==='
 Assert (@([IO.File]::ReadAllLines($cfg) | Select-String -Pattern '^RevokedKeys').Count -eq 1) 'RevokedKeys genau einmal'
 
 Write-Host '=== Entfernen ==='
-& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Work 'paste-windows.ps1.remove')
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Work 'paste-windows-remove.ps1')
 Assert (-not ([IO.File]::ReadAllLines($cfg) | Select-String -Pattern '^RevokedKeys')) 'RevokedKeys entfernt'
 Assert (-not (Get-ScheduledTask -TaskName 'UCM Remote KRL Update' -ErrorAction SilentlyContinue)) 'Aufgabe entfernt'
 Write-Host 'ALLES OK'
