@@ -1,25 +1,24 @@
 import Foundation
 import Security
 
-/// Speichert den UCM-API-Schlüssel im Schlüsselbund (nur auf diesem Gerät).
+/// Geheimnisse im Schlüsselbund (nur auf diesem Gerät, nicht im Backup).
 enum Keychain {
     private static let service = "de.marck.ucmremote.apikey"
-    private static let account = "default"
 
-    static func saveAPIKey(_ key: String) {
-        deleteAPIKey()
-        guard !key.isEmpty else { return }
+    static func save(_ value: String, account: String) {
+        delete(account: account)
+        guard !value.isEmpty else { return }
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
             kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
-            kSecValueData as String: Data(key.utf8),
+            kSecValueData as String: Data(value.utf8),
         ]
         SecItemAdd(query as CFDictionary, nil)
     }
 
-    static func loadAPIKey() -> String {
+    static func load(account: String) -> String {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -33,7 +32,7 @@ enum Keychain {
         return String(decoding: data, as: UTF8.self)
     }
 
-    static func deleteAPIKey() {
+    static func delete(account: String) {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -41,4 +40,11 @@ enum Keychain {
         ]
         SecItemDelete(query as CFDictionary)
     }
+
+    // MARK: Konten
+
+    /// Konto der Version 0.1 (nur ein Server).
+    static let legacyAccount = "default"
+    static func apiKeyAccount(_ profile: UUID) -> String { "api-\(profile.uuidString)" }
+    static func krlKeyAccount(_ profile: UUID) -> String { "krl-\(profile.uuidString)" }
 }

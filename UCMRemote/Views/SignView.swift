@@ -20,6 +20,7 @@ struct IssueResult: Identifiable {
     let privateKey: String?
     let publicKey: String
     let fileBase: String
+    var title = "Ausgestellt"
 }
 
 struct SignView: View {
@@ -151,7 +152,7 @@ struct SignView: View {
         .toolbar {
             Button { Task { await loadCAs() } } label: { Image(systemName: "arrow.clockwise") }
         }
-        .task { if cas.isEmpty { await loadCAs() } }
+        .task(id: settings.activeID) { await loadCAs() }
         .onChange(of: caID) { _ in
             if let ca = selectedCA { certType = ca.type }
         }
@@ -168,6 +169,8 @@ struct SignView: View {
 
     private func loadCAs() async {
         guard settings.isConfigured else {
+            cas = []
+            caID = nil
             errorText = UCMError.notConfigured.localizedDescription
             return
         }
@@ -207,6 +210,9 @@ struct SignView: View {
                 let cert = try await client.generate(keyType: serverKeyType, request: request)
                 result = IssueResult(certificate: cert, privateKey: cert.privateKey,
                                      publicKey: cert.publicKey ?? "", fileBase: serverKeyType.fileBase)
+            }
+            if let cert = result?.certificate, let profile = settings.active {
+                await ExpiryNotifier.schedule(cert, profile: profile)
             }
         } catch {
             errorText = error.localizedDescription

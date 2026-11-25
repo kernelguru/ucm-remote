@@ -1,10 +1,14 @@
 import SwiftUI
+import UIKit
 
 /// Zeigt das ausgestellte Zertifikat (und ggf. den Schlüssel) und bietet die Dateien zum Teilen an.
+/// Zertifikat und Public Key werden dauerhaft unter „Dateien“ abgelegt, der private Schlüssel nur
+/// kurz in einem temporären Ordner zum Teilen. Er wird beim Schließen gelöscht.
 struct IssueResultView: View {
     let result: IssueResult
     @Environment(\.dismiss) private var dismiss
     @State private var files: [URL] = []
+    @State private var secretFiles: [URL] = []
     @State private var errorText: String?
 
     private var cert: SSHCertificate { result.certificate }
@@ -15,12 +19,13 @@ struct IssueResultView: View {
             CertificateInfoSection(cert: cert)
 
             Section {
-                if !files.isEmpty {
-                    ShareLink(items: files) {
-                        Label("Dateien teilen / sichern", systemImage: "square.and.arrow.up")
+                if !files.isEmpty || !secretFiles.isEmpty {
+                    ShareLink(items: secretFiles + files) {
+                        Label(secretFiles.isEmpty ? "Dateien teilen / sichern" : "Schlüssel und Zertifikat teilen",
+                              systemImage: "square.and.arrow.up")
                     }
                 }
-                Text("Gespeichert in Dateien → Auf meinem iPhone → UCM Remote → \(folderName)")
+                Text("Zertifikat und Public Key liegen in Dateien → Auf meinem iPhone → UCM Remote → \(folderName).")
                     .font(.caption).foregroundStyle(.secondary)
             } header: {
                 Text("Dateien")
@@ -30,7 +35,8 @@ struct IssueResultView: View {
 
             if let key = result.privateKey {
                 TextBlockSection(title: "Privater Schlüssel (\(base))", text: key,
-                                 footer: "Wird nur jetzt angezeigt. Sicher aufbewahren, z. B. in einer SSH-App (Termius, Blink, Secure ShellFish) importieren.")
+                                 footer: "Wird nur jetzt angezeigt und nicht auf dem iPhone gespeichert. Jetzt teilen oder in eine SSH-App importieren (Termius, Blink, Secure ShellFish). Die Zwischenablage wird nach 10 Minuten geleert.",
+                                 sensitive: true)
             }
             if let c = cert.certificate {
                 TextBlockSection(title: "Zertifikat (\(base)-cert.pub)", text: c, footer: nil)
@@ -42,13 +48,14 @@ struct IssueResultView: View {
             }
         }
         .appBackground()
-        .navigationTitle("Ausgestellt")
+        .navigationTitle(result.title)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .confirmationAction) { Button("Fertig") { dismiss() } }
         }
         .interactiveDismissDisabled(result.privateKey != nil)
         .onAppear(perform: writeFiles)
+        .onDisappear { FileExport.removeTemporary(secretFiles) }
     }
 
     private var folderName: String {
@@ -58,11 +65,13 @@ struct IssueResultView: View {
     private func writeFiles() {
         guard files.isEmpty else { return }
         var items: [FileExport.Item] = []
-        if let key = result.privateKey { items.append(.init(name: base, content: key)) }
         if let c = cert.certificate { items.append(.init(name: "\(base)-cert.pub", content: c.trimmed + "\n")) }
         if !result.publicKey.isEmpty { items.append(.init(name: "\(base).pub", content: result.publicKey.trimmed + "\n")) }
         do {
             files = try FileExport.write(items, folder: folderName)
+            if let key = result.privateKey {
+                secretFiles = try FileExport.writeTemporary([.init(name: base, content: key)])
+            }
         } catch {
             errorText = "Dateien konnten nicht gespeichert werden: \(error.localizedDescription)"
         }
@@ -82,16 +91,18 @@ struct CertificateInfoSection: View {
             if let ca = cert.caName { LabeledContent("CA", value: ca) }
             if let from = cert.validFromDate { LabeledContent("Gültig ab", value: from.formatted(date: .abbreviated, time: .shortened)) }
             if let to = cert.validToDate { LabeledContent("Gültig bis", value: to.formatted(date: .abbreviated, time: .shortened)) }
-            if let status = cert.status { LabeledContent("Status", value: status) }
+            ExpiryBadge(cert: cert)
         }
     }
 }
 
-/// Mehrzeiliger Text mit Kopier-Knopf.
+/// Mehrzeiliger Text mit Kopier-Knopf. Vertrauliches wird nur lokal und befristet kopiert.
 struct TextBlockSection: View {
     let title: String
     let text: String
     let footer: String?
+    var sensitive = false
+    var lineLimit = 12
     @State private var copied = false
 
     var body: some View {
@@ -99,9 +110,9 @@ struct TextBlockSection: View {
             Text(text)
                 .font(.system(.caption2, design: .monospaced))
                 .textSelection(.enabled)
-                .lineLimit(12)
+                .lineLimit(lineLimit)
             Button {
-                UIPasteboard.general.string = text
+                Clipboard.copy(text, sensitive: sensitive)
                 copied = true
             } label: {
                 Label(copied ? "Kopiert" : "Kopieren", systemImage: copied ? "checkmark" : "doc.on.doc")
@@ -110,6 +121,19 @@ struct TextBlockSection: View {
             Text(title)
         } footer: {
             if let footer { Text(footer) }
+        }
+    }
+}
+
+enum Clipboard {
+    /// Vertrauliches nicht über Handoff auf andere Geräte und nach 10 Minuten löschen.
+    static func copy(_ text: String, sensitive: Bool) {
+        if sensitive {
+            UIPasteboard.general.setItems(
+                [[UIPasteboard.typeAutomatic: text]],
+                options: [.localOnly: true, .expirationDate: Date().addingTimeInterval(600)])
+        } else {
+            UIPasteboard.general.string = text
         }
     }
 }

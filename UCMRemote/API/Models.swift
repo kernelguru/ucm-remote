@@ -57,6 +57,20 @@ struct SSHCertificate: Decodable, Identifiable, Hashable {
     var principalText: String { (principals ?? []).joined(separator: ", ") }
     var validToDate: Date? { validTo.flatMap(Date.fromUCM) }
     var validFromDate: Date? { validFrom.flatMap(Date.fromUCM) }
+    var isRevoked: Bool { revoked == true || status?.lowercased() == "revoked" }
+
+    /// Zustand für die Anzeige in Listen.
+    func expiry(now: Date = Date()) -> Expiry {
+        if isRevoked { return .revoked }
+        guard let to = validToDate else { return .unknown }
+        if to <= now { return .expired }
+        if to.timeIntervalSince(now) < 7 * 86400 { return .soon(to) }
+        return .valid(to)
+    }
+
+    enum Expiry: Equatable {
+        case valid(Date), soon(Date), expired, revoked, unknown
+    }
 }
 
 /// Antwort von `GET /api/v2/ssh/certificates/{id}/export`.
@@ -65,6 +79,16 @@ struct SSHExport: Decodable {
     let publicKey: String?
     let caPublicKey: String?
     let keyId: String?
+}
+
+/// Antwort von `POST /api/v2/account/apikeys`. Der Schlüssel kommt nur dieses eine Mal zurück.
+struct CreatedAPIKey: Decodable {
+    let id: Int
+    let key: String
+    let name: String?
+    let keyPrefix: String?
+    let permissions: [String]?
+    let expiresAt: String?
 }
 
 enum SSHCertType: String, CaseIterable, Identifiable {

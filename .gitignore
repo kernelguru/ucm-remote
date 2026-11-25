@@ -6,3 +6,5 @@ build/
 DerivedData/
 Payload/
 *.ipa
+work/
+build-test/

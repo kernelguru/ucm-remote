@@ -8,8 +8,14 @@ targets:
     type: application
     platform: iOS
     sources:
-      - UCMRemote
-    scheme: {}
+      - path: UCMRemote
+        excludes:
+          - "Resources/**"
+      - path: UCMRemote/Resources
+        buildPhase: resources
+    scheme:
+      testTargets:
+        - UCMRemoteTests
     info:
       path: UCMRemote/Info.plist
       properties:
@@ -22,17 +28,31 @@ targets:
         LSSupportsOpeningDocumentsInPlace: true
         UIFileSharingEnabled: true
         NSLocalNetworkUsageDescription: Die App verbindet sich mit deinem Ultimate CA Manager im lokalen Netzwerk.
+        NSFaceIDUsageDescription: UCM Remote nutzt Face ID, um die App zu entsperren.
         NSAppTransportSecurity:
-          NSAllowsArbitraryLoads: true
           NSAllowsLocalNetworking: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: de.marck.ucmremote
-        MARKETING_VERSION: 0.1.0
-        CURRENT_PROJECT_VERSION: 1
+        MARKETING_VERSION: 0.2.0
+        CURRENT_PROJECT_VERSION: 2
         SWIFT_VERSION: "5.0"
         TARGETED_DEVICE_FAMILY: "1"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         CODE_SIGNING_ALLOWED: "NO"
         CODE_SIGNING_REQUIRED: "NO"
         CODE_SIGN_IDENTITY: ""
+  UCMRemoteTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - UCMRemoteTests
+    dependencies:
+      - target: UCMRemote
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: de.marck.ucmremote.tests
+        SWIFT_VERSION: "5.0"
+        TARGETED_DEVICE_FAMILY: "1"
+        CODE_SIGNING_ALLOWED: "NO"

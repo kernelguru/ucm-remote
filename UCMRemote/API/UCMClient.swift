@@ -5,6 +5,7 @@ import Security
 enum UCMError: LocalizedError {
     case notConfigured
     case invalidURL
+    case insecureScheme
     case untrustedCertificate(fingerprint: String)
     case http(status: Int, message: String)
     case decoding(String)
@@ -15,6 +16,8 @@ enum UCMError: LocalizedError {
             return "Bitte zuerst Server-Adresse und API-Schlüssel in den Einstellungen eintragen."
         case .invalidURL:
             return "Die Server-Adresse ist ungültig."
+        case .insecureScheme:
+            return "Bitte HTTPS verwenden. Unverschlüsselte Verbindungen (http://) sind nicht erlaubt."
         case .untrustedCertificate(let fp):
             return "Das TLS-Zertifikat des Servers ist nicht vertrauenswürdig.\nSHA-256: \(fp)"
         case .http(let status, let message):
@@ -35,10 +38,17 @@ final class TrustDelegate: NSObject, URLSessionDelegate {
     private let pinned: String?
     private let lock = NSLock()
     private var _rejectedFingerprint: String?
+    private var _leafCertificate: Data?
 
     var rejectedFingerprint: String? {
         lock.lock(); defer { lock.unlock() }
         return _rejectedFingerprint
+    }
+
+    /// DER des zuletzt gesehenen Server-Zertifikats (für Pinning auf Servern).
+    var leafCertificate: Data? {
+        lock.lock(); defer { lock.unlock() }
+        return _leafCertificate
     }
 
     init(pinned: String?) {
@@ -56,7 +66,9 @@ final class TrustDelegate: NSObject, URLSessionDelegate {
             completionHandler(.cancelAuthenticationChallenge, nil)
             return
         }
-        let fingerprint = Self.fingerprint(of: leaf)
+        let der = SecCertificateCopyData(leaf) as Data
+        let fingerprint = TLSPin.certificateFingerprint(der: der)
+        lock.lock(); _leafCertificate = der; lock.unlock()
         if let pinned, pinned == fingerprint {
             completionHandler(.useCredential, URLCredential(trust: trust))
             return
@@ -67,11 +79,6 @@ final class TrustDelegate: NSObject, URLSessionDelegate {
         }
         lock.lock(); _rejectedFingerprint = fingerprint; lock.unlock()
         completionHandler(.cancelAuthenticationChallenge, nil)
-    }
-
-    static func fingerprint(of cert: SecCertificate) -> String {
-        let der = SecCertificateCopyData(cert) as Data
-        return SHA256.hash(data: der).map { String(format: "%02X", $0) }.joined(separator: ":")
     }
 }
 
@@ -87,6 +94,7 @@ struct UCMClient {
         if !s.contains("://") { s = "https://" + s }
         while s.hasSuffix("/") { s.removeLast() }
         guard let url = URL(string: s), url.host != nil else { throw UCMError.invalidURL }
+        guard url.scheme?.lowercased() == "https" else { throw UCMError.insecureScheme }
         self.baseURL = url
         self.apiKey = apiKey.trimmed
         self.pinnedFingerprint = pinnedFingerprint
@@ -119,6 +127,10 @@ struct UCMClient {
         return try await decode(send("POST", "/api/v2/ssh/certificates/generate", json: body))
     }
 
+    func certificate(id: Int) async throws -> SSHCertificate {
+        try await decode(send("GET", "/api/v2/ssh/certificates/\(id)"))
+    }
+
     func export(certificateID: Int) async throws -> SSHExport {
         try await decode(send("GET", "/api/v2/ssh/certificates/\(certificateID)/export"))
     }
@@ -127,10 +139,41 @@ struct UCMClient {
         _ = try await send("POST", "/api/v2/ssh/certificates/\(certificateID)/revoke", json: ["reason": "unspecified"])
     }
 
+    /// Einrichtungsskript, das UCM für eine SSH-CA erzeugt (`GET /api/v2/ssh/cas/{id}/setup-script`).
+    func setupScript(caID: Int, type: SSHCertType, hostname: String, platform: SetupPlatform) async throws -> String {
+        var items = [URLQueryItem(name: "type", value: type.rawValue),
+                     URLQueryItem(name: "platform", value: platform.ucmParameter)]
+        if !hostname.trimmed.isEmpty { items.append(URLQueryItem(name: "hostname", value: hostname.trimmed)) }
+        let data = try await send("GET", "/api/v2/ssh/cas/\(caID)/setup-script", query: items, accept: "text/plain")
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    /// Sperrliste (KRL, Binärformat von OpenSSH) einer SSH-CA.
+    func krl(caID: Int) async throws -> Data {
+        try await send("GET", "/api/v2/ssh/cas/\(caID)/krl", accept: "application/octet-stream")
+    }
+
+    /// Legt einen neuen API-Schlüssel für den eigenen Benutzer an. UCM erlaubt nur Rechte, die
+    /// der aufrufende Schlüssel selbst hat, und keine längere Laufzeit als dessen eigene.
+    func createAPIKey(name: String, permissions: [String], expiresDays: Int?) async throws -> CreatedAPIKey {
+        let body: [String: Any] = ["name": name, "permissions": permissions,
+                                   "expires_days": expiresDays.map { $0 as Any } ?? NSNull()]
+        return try await decode(send("POST", "/api/v2/account/apikeys", json: body))
+    }
+
+    /// DER des TLS-Zertifikats, das der Server gerade ausliefert.
+    func serverCertificate() async throws -> Data {
+        let delegate = TrustDelegate(pinned: pinnedFingerprint)
+        _ = try await send("GET", "/api/v2/ssh/cas", query: [URLQueryItem(name: "per_page", value: "1")], delegate: delegate)
+        guard let der = delegate.leafCertificate else { throw UCMError.decoding("kein TLS-Zertifikat") }
+        return der
+    }
+
     // MARK: Transport
 
     private func send(_ method: String, _ path: String, query: [URLQueryItem] = [],
-                      json: [String: Any]? = nil) async throws -> Data {
+                      json: [String: Any]? = nil, accept: String = "application/json",
+                      delegate: TrustDelegate? = nil) async throws -> Data {
         guard var comps = URLComponents(url: baseURL.appendingPathComponent(path), resolvingAgainstBaseURL: false) else {
             throw UCMError.invalidURL
         }
@@ -140,13 +183,13 @@ struct UCMClient {
         var req = URLRequest(url: url, timeoutInterval: 30)
         req.httpMethod = method
         req.setValue(apiKey, forHTTPHeaderField: "X-API-Key")
-        req.setValue("application/json", forHTTPHeaderField: "Accept")
+        req.setValue(accept, forHTTPHeaderField: "Accept")
         if let json {
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
             req.httpBody = try JSONSerialization.data(withJSONObject: json)
         }
 
-        let delegate = TrustDelegate(pinned: pinnedFingerprint)
+        let delegate = delegate ?? TrustDelegate(pinned: pinnedFingerprint)
         let session = URLSession(configuration: .ephemeral, delegate: delegate, delegateQueue: nil)
         defer { session.finishTasksAndInvalidate() }
 

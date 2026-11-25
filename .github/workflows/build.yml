@@ -2,7 +2,7 @@ name: Build unsigned IPA
 
 on:
   push:
-    branches: [main]
+    branches: [main, "claude/**"]
     tags: ["v*"]
   pull_request:
   workflow_dispatch:
@@ -30,6 +30,30 @@ jobs:
 
       - name: Generate Xcode project
         run: xcodegen generate
+
+      - name: Unit tests (Simulator)
+        run: |
+          set -o pipefail
+          UDID=$(xcrun simctl list devices available -j | python3 -c '
+          import json, re, sys
+          best = None
+          for runtime, devices in json.load(sys.stdin)["devices"].items():
+              m = re.search(r"iOS-(\d+)-(\d+)", runtime)
+              if not m:
+                  continue
+              version = (int(m.group(1)), int(m.group(2)))
+              for d in devices:
+                  if d["name"].startswith("iPhone") and (best is None or version > best[0]):
+                      best = (version, d["udid"])
+          print(best[1])')
+          echo "Simulator: $UDID"
+          xcodebuild test \
+            -project UCMRemote.xcodeproj \
+            -scheme UCMRemote \
+            -destination "id=$UDID" \
+            -derivedDataPath build-test \
+            CODE_SIGNING_ALLOWED=NO \
+            -quiet
 
       - name: Build (unsigned)
         run: |
@@ -63,3 +87,47 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: UCMRemote-unsigned.ipa
+
+  # Führt die Einrichtungsskripte der App wirklich aus: sshd, Sperrliste, Anmeldung mit
+  # gültigem und gesperrtem Zertifikat, zweiter Lauf und Entfernen.
+  server-setup-linux:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ["debian:12", "almalinux:9", "archlinux:latest", "alpine:3.20"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Lint scripts
+        run: shellcheck -s sh -e SC2016,SC2020 UCMRemote/Resources/*.sh tools/server-setup-test/*.sh
+
+      - name: Run setup in ${{ matrix.image }}
+        run: |
+          sh tools/server-setup-test/prepare.sh work
+          python3 tools/server-setup-test/render.py linux tools/server-setup-test/mock-ucm.sh \
+            https://127.0.0.1:8443 "$(cat work/pin.txt)" work/paste-linux.txt
+          python3 tools/server-setup-test/krl-server.py work &
+          sleep 2
+          docker run --rm --network host -v "$PWD:/w" "${{ matrix.image }}" sh /w/tools/server-setup-test/container-test.sh
+
+  server-setup-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare test data
+        shell: bash
+        run: |
+          SKIP_CERTS=1 sh tools/server-setup-test/prepare.sh work
+          fp=$(openssl x509 -in work/tls.crt -noout -fingerprint -sha256 | cut -d= -f2)
+          sed "s|CA_KEY_PLACEHOLDER|$(cat work/ca.pub)|" tools/server-setup-test/mock-ucm.ps1 > work/mock-ucm.ps1
+          python tools/server-setup-test/render.py windows work/mock-ucm.ps1 https://127.0.0.1:8443 "$fp" work/paste-windows.ps1
+
+      - name: Start KRL test server
+        shell: pwsh
+        run: Start-Process python -ArgumentList 'tools/server-setup-test/krl-server.py', 'work' -WindowStyle Hidden
+
+      - name: Run setup
+        shell: pwsh
+        run: tools/server-setup-test/windows-test.ps1 -Work "$PWD\work"

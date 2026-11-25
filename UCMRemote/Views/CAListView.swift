@@ -31,11 +31,12 @@ struct CAListView: View {
         .navigationTitle("SSH-CAs")
         .refreshable { await load() }
         .overlay { if loading && cas.isEmpty { ProgressView() } }
-        .task { await load() }
+        .task(id: settings.activeID) { await load() }
     }
 
     private func load() async {
         guard settings.isConfigured else {
+            cas = []
             errorText = UCMError.notConfigured.localizedDescription
             return
         }
@@ -51,7 +52,11 @@ struct CAListView: View {
 }
 
 struct CADetailView: View {
+    @EnvironmentObject private var settings: AppSettings
     let ca: SSHCA
+    @State private var krlFiles: [URL] = []
+    @State private var loadingKRL = false
+    @State private var errorText: String?
 
     var body: some View {
         Form {
@@ -64,13 +69,52 @@ struct CADetailView: View {
                     Text(fp).font(.system(.caption2, design: .monospaced)).textSelection(.enabled)
                 }
             }
+
+            Section {
+                NavigationLink {
+                    ServerSetupView(ca: ca)
+                } label: {
+                    Label("Server einrichten", systemImage: "terminal")
+                }
+            } footer: {
+                Text(ca.type == .user
+                     ? "Erzeugt einen Befehl zum Einfügen in deine SSH-App: Der Server vertraut danach den Benutzer-Zertifikaten dieser CA und holt auf Wunsch die Sperrliste automatisch."
+                     : "Erzeugt einen Befehl zum Einfügen in deine SSH-App, der den Server für Host-Zertifikate dieser CA vorbereitet.")
+            }
+
+            if ca.type == .user {
+                Section {
+                    if krlFiles.isEmpty {
+                        Button {
+                            Task { await loadKRL() }
+                        } label: {
+                            HStack {
+                                Label("Sperrliste (KRL) laden", systemImage: "list.bullet.rectangle")
+                                if loadingKRL { Spacer(); ProgressView() }
+                            }
+                        }
+                        .disabled(loadingKRL)
+                    } else {
+                        ShareLink(items: krlFiles) {
+                            Label("Sperrliste teilen", systemImage: "square.and.arrow.up")
+                        }
+                    }
+                } footer: {
+                    Text("Für Server ohne Zugang zu UCM: Datei z. B. nach /etc/ssh/ucm_revoked_keys.krl kopieren und in sshd_config „RevokedKeys“ setzen.")
+                }
+            }
+
+            if let errorText {
+                Section { Text(errorText).foregroundStyle(.red).font(.callout) }
+            }
+
             if let key = ca.publicKey {
                 TextBlockSection(title: "Public Key", text: key, footer: nil)
                 if ca.type == .user {
                     TextBlockSection(
-                        title: "Server einrichten (sshd_config)",
+                        title: "Von Hand einrichten (sshd_config)",
                         text: "echo '\(key.trimmed)' > /etc/ssh/ucm_user_ca.pub\necho 'TrustedUserCAKeys /etc/ssh/ucm_user_ca.pub' >> /etc/ssh/sshd_config\nsystemctl reload ssh",
-                        footer: "Danach akzeptiert der Server alle Benutzer-Zertifikate dieser CA.")
+                        footer: "Kurzform ohne Prüfung. Steht in sshd_config ein Match-Block, die Zeile darüber einfügen.")
                 } else {
                     TextBlockSection(
                         title: "Client einrichten (known_hosts)",
@@ -82,6 +126,19 @@ struct CADetailView: View {
         .appBackground()
         .navigationTitle(ca.displayName)
         .navigationBarTitleDisplayMode(.inline)
+        .onDisappear { FileExport.removeTemporary(krlFiles) }
+    }
+
+    private func loadKRL() async {
+        loadingKRL = true
+        defer { loadingKRL = false }
+        do {
+            let data = try await settings.client().krl(caID: ca.id)
+            krlFiles = [try FileExport.writeTemporary(data: data, name: "ucm_revoked_keys.krl")]
+            errorText = nil
+        } catch {
+            errorText = error.localizedDescription
+        }
     }
 
     static func duration(_ seconds: Int) -> String {
