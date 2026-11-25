@@ -14,8 +14,10 @@ final class ServerSetupTests: XCTestCase {
 
     private func assertNoPlaceholders(_ text: String, file: StaticString = #filePath, line: UInt = #line) {
         let regex = try! NSRegularExpression(pattern: "__[A-Z0-9_]+__")
-        let m = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text))
-        XCTAssertNil(m, "Platzhalter übrig: \(m.map { (text as NSString).substring(with: $0.range) } ?? "")", file: file, line: line)
+        // __PROGRAMDATA__ ist ein Token von OpenSSH für Windows, kein Platzhalter der App.
+        let cleaned = text.replacingOccurrences(of: "__PROGRAMDATA__", with: "")
+        let m = regex.firstMatch(in: cleaned, range: NSRange(cleaned.startIndex..., in: cleaned))
+        XCTAssertNil(m, "Platzhalter übrig: \(m.map { (cleaned as NSString).substring(with: $0.range) } ?? "")", file: file, line: line)
     }
 
     func testShellQuote() {
@@ -37,7 +39,7 @@ final class ServerSetupTests: XCTestCase {
         let paste = try ServerSetup.linuxPasteCommand(script: script, sudo: true)
         XCTAssertTrue(paste.hasPrefix(" sudo sh -c "))
         XCTAssertTrue(paste.hasSuffix("\nUCM_REMOTE_EOF\n"))
-        XCTAssertFalse(try ServerSetup.linuxPasteCommand(script: script, sudo: false).contains("sudo"))
+        XCTAssertTrue(try ServerSetup.linuxPasteCommand(script: script, sudo: false).hasPrefix(" sh -c "))
     }
 
     func testLinuxScriptWithoutKRLHasNoKey() throws {
