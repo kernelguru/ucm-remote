@@ -27,11 +27,13 @@ rm -f "$TMP"
 SSHD=$(command -v sshd 2>/dev/null || echo /usr/sbin/sshd)
 "$SSHD" -t
 if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
-    systemctl reload sshd 2>/dev/null || systemctl reload ssh
+    systemctl reload sshd 2>/dev/null || systemctl reload ssh 2>/dev/null || echo "[WARN]  sshd bitte manuell neu laden."
 elif command -v rc-service >/dev/null 2>&1; then
-    rc-service sshd reload
+    rc-service sshd reload || echo "[WARN]  sshd bitte manuell neu laden."
+elif command -v service >/dev/null 2>&1; then
+    service sshd reload 2>/dev/null || service ssh reload 2>/dev/null || echo "[WARN]  sshd bitte manuell neu laden."
 else
-    service sshd reload 2>/dev/null || service ssh reload
+    echo "[WARN]  Kein Dienst-Manager gefunden, bitte sshd manuell neu laden."
 fi
 rm -f "$KRL_FILE"
 echo "[OK]    Automatische Sperrliste entfernt."

@@ -53,7 +53,7 @@ jobs:
             -destination "id=$UDID" \
             -derivedDataPath build-test \
             CODE_SIGNING_ALLOWED=NO \
-            -quiet
+            2>&1 | grep -E --line-buffered "error:|failed|Test Suite .* (passed|failed)|Executed|\*\* TEST"
 
       - name: Build (unsigned)
         run: |
@@ -118,6 +118,8 @@ jobs:
 
       - name: Prepare test data
         shell: bash
+        env:
+          MSYS_NO_PATHCONV: "1"
         run: |
           SKIP_CERTS=1 sh tools/server-setup-test/prepare.sh work
           fp=$(openssl x509 -in work/tls.crt -noout -fingerprint -sha256 | cut -d= -f2)
